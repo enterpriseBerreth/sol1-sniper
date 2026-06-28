@@ -10,7 +10,6 @@ const MODULE = 'SOL1';
 
 // ── Status display interval ──
 const STATUS_INTERVAL_MS = 60_000;
-const DAILY_SUMMARY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 async function main() {
   log.banner('SOL1 — Solana Sniper Bot');
@@ -36,9 +35,6 @@ async function main() {
   const telegram = new TelegramAlert();
   const trader = new PaperTrader(telegram);
   const scanner = new TokenScanner();
-
-  // Send startup notification
-  await telegram.sendStartupAlert();
 
   // Processing queue to avoid concurrent evaluations overwhelming the RPC
   let evaluating = false;
@@ -100,41 +96,37 @@ async function main() {
   scanner.start();
   trader.startPriceMonitor();
 
-  // Periodic status display
+  // Periodic status display (console only)
   const statusInterval = setInterval(() => {
     trader.printStatus();
   }, STATUS_INTERVAL_MS);
 
-  // Daily summary
-  const dailyInterval = setInterval(() => {
-    trader.sendDailySummary();
-  }, DAILY_SUMMARY_INTERVAL_MS);
-
   // Graceful shutdown
-  const shutdown = async () => {
+  const shutdown = async (reason: string) => {
     log.info(MODULE, 'Shutting down...');
     scanner.stop();
     trader.stopPriceMonitor();
     clearInterval(statusInterval);
-    clearInterval(dailyInterval);
 
     trader.printStatus();
-    await trader.sendDailySummary();
+    await telegram.sendStoppedAlert(reason);
 
     log.banner('SOL1 — Shutdown Complete');
     process.exit(0);
   };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('Manual stop (SIGINT)'));
+  process.on('SIGTERM', () => shutdown('Process terminated (SIGTERM)'));
 
   // ── Crash protection for Railway / long-running deploy ──
-  process.on('uncaughtException', (err) => {
-    log.error(MODULE, `Uncaught exception (kept alive): ${err.message}`);
+  process.on('uncaughtException', async (err) => {
+    log.error(MODULE, `Uncaught exception: ${err.message}`);
     log.error(MODULE, err.stack ?? '');
+    await telegram.sendStoppedAlert(`Crash: ${err.message}`);
   });
-  process.on('unhandledRejection', (reason) => {
-    log.error(MODULE, `Unhandled rejection (kept alive): ${reason}`);
+  process.on('unhandledRejection', async (reason) => {
+    log.error(MODULE, `Unhandled rejection: ${reason}`);
+    await telegram.sendStoppedAlert(`Crash: unhandled rejection — ${reason}`);
   });
 
   log.success(MODULE, 'All systems online — scanning for new tokens...');
@@ -197,7 +189,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ── Launch ──
-main().catch((err) => {
+main().catch(async (err) => {
   log.error(MODULE, `Fatal error: ${err}`);
+  try {
+    const telegram = new TelegramAlert();
+    await telegram.sendStoppedAlert(`Fatal: ${err}`);
+  } catch (_) { /* best-effort */ }
   process.exit(1);
 });
