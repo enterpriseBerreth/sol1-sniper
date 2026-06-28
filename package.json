@@ -2,6 +2,7 @@
   "name": "sol1-sniper",
   "version": "1.0.0",
   "description": "SOL1 - Solana Token Sniper Bot with paper trading, scam protection, and trailing exits",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -11,11 +12,11 @@
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
     "@solana/spl-token": "^0.4.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "tsx": "^4.16.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "tsx": "^4.16.0",
     "@types/node": "^20.14.0"
   }
 }
