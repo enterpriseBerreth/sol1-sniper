@@ -128,7 +128,19 @@ async function main() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
+  // ── Crash protection for Railway / long-running deploy ──
+  process.on('uncaughtException', (err) => {
+    log.error(MODULE, `Uncaught exception (kept alive): ${err.message}`);
+    log.error(MODULE, err.stack ?? '');
+  });
+  process.on('unhandledRejection', (reason) => {
+    log.error(MODULE, `Unhandled rejection (kept alive): ${reason}`);
+  });
+
   log.success(MODULE, 'All systems online — scanning for new tokens...');
+
+  // Keep the process alive indefinitely
+  await new Promise(() => {});
 }
 
 // ── Entry quality filter ──
