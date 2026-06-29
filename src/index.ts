@@ -1,29 +1,35 @@
 import { CONFIG } from './config.js';
-import { TokenScanner } from './scanner.js';
-import { runSafetyChecks } from './safety.js';
-import { PaperTrader } from './trader.js';
+import { WalletMonitor } from './wallet-monitor.js';
+import { CopyTrader } from './copy-trader.js';
+import { WalletSeeder } from './wallet-seeder.js';
 import { TelegramAlert } from './telegram.js';
-import { TokenPair } from './types.js';
 import { log } from './logger.js';
 
-const MODULE = 'SOL1';
-
-// ── Status display interval ──
+const MODULE = 'COPYBOT';
 const STATUS_INTERVAL_MS = 60_000;
+const PRUNE_INTERVAL_MS = 10 * 60_000;
 
 async function main() {
-  log.banner('SOL1 — Solana Sniper Bot');
+  log.banner('COPYBOT — Solana Copytrade Bot');
 
   console.log(`  Mode:              ${CONFIG.PAPER_TRADE ? 'PAPER TRADE' : 'LIVE TRADING'}`);
   console.log(`  Budget:            $${CONFIG.STARTING_BUDGET_USD}`);
   console.log(`  Trade Size:        $${CONFIG.TRADE_SIZE_USD}`);
   console.log(`  Max Concurrent:    ${CONFIG.MAX_CONCURRENT_TRADES}`);
-  console.log(`  Min Safety Score:  ${CONFIG.MIN_SAFETY_SCORE}/100`);
-  console.log(`  Stop Loss:         ${CONFIG.INITIAL_STOP_LOSS_PCT}%`);
-  console.log(`  Max Hold Time:     ${CONFIG.MAX_HOLD_TIME_MINUTES}m`);
+  console.log(`  Wallets:           ${CONFIG.WATCHED_WALLETS.length} starting`);
+  console.log(`  Max Wallets:       ${CONFIG.MAX_WATCHED_WALLETS} (auto-seed enabled)`);
+  console.log(`  Poll Interval:     ${CONFIG.WALLET_POLL_INTERVAL_MS / 1000}s`);
+  console.log(`  Max Hold:          ${CONFIG.MAX_HOLD_TIME_MINUTES}m`);
+  console.log(`  Emergency SL:      ${CONFIG.EMERGENCY_STOP_LOSS_PCT}%`);
   const rpcHost = new URL(CONFIG.SOLANA_RPC_URL).hostname;
   console.log(`  RPC:               ${rpcHost}`);
+  console.log(`  Helius API Key:    ${CONFIG.HELIUS_API_KEY ? CONFIG.HELIUS_API_KEY.slice(0, 8) + '...' : 'NOT SET'}`);
   console.log('');
+
+  if (!CONFIG.HELIUS_API_KEY) {
+    log.error(MODULE, 'HELIUS_API_KEY is required. Set it via SOLANA_RPC_URL or HELIUS_API_KEY env var.');
+    process.exit(1);
+  }
 
   if (!CONFIG.PAPER_TRADE) {
     log.warn(MODULE, '*** LIVE TRADING MODE — Real money at risk! ***');
@@ -33,162 +39,86 @@ async function main() {
 
   // Initialize components
   const telegram = new TelegramAlert();
-  const trader = new PaperTrader(telegram);
-  const scanner = new TokenScanner();
+  const trader = new CopyTrader(telegram);
+  const monitor = new WalletMonitor(CONFIG.WATCHED_WALLETS);
+  const seeder = new WalletSeeder(monitor);
 
-  // Processing queue to avoid concurrent evaluations overwhelming the RPC
-  let evaluating = false;
-  const evaluationQueue: TokenPair[] = [];
-
-  async function processQueue() {
-    if (evaluating || evaluationQueue.length === 0) return;
-    evaluating = true;
-
-    while (evaluationQueue.length > 0) {
-      const pair = evaluationQueue.shift()!;
-
-      if (!trader.canTrade()) {
-        log.info(MODULE, `Skipping ${pair.baseToken.symbol} — trade limit reached or insufficient budget`);
-        continue;
+  // Wire up: when monitor detects a swap, trader handles it
+  monitor.onSwapDetected = async (swap) => {
+    try {
+      if (swap.direction === 'BUY') {
+        seeder.recordBuy(swap.tokenMint);
       }
-
-      if (trader.hasPosition(pair.baseToken.address)) {
-        continue;
-      }
-
-      try {
-        // Run safety checks
-        const safetyResult = await runSafetyChecks(pair);
-
-        if (!safetyResult.passed) {
-          log.warn(MODULE, `${pair.baseToken.symbol} REJECTED — Safety score: ${safetyResult.score}/100`);
-          if (safetyResult.flags.length > 0) {
-            for (const flag of safetyResult.flags) {
-              log.warn(MODULE, `  Red flag: ${flag}`);
-            }
-          }
-          continue;
-        }
-
-        // Additional entry quality check
-        if (!isHighQualityEntry(pair)) {
-          log.info(MODULE, `${pair.baseToken.symbol} — Passed safety but entry quality too low, skipping`);
-          continue;
-        }
-
-        log.success(MODULE, `${pair.baseToken.symbol} APPROVED — Score: ${safetyResult.score}/100 — Executing buy...`);
-        await trader.executeBuy(pair, safetyResult);
-      } catch (err) {
-        log.error(MODULE, `Error evaluating ${pair.baseToken.symbol}: ${err}`);
-      }
+      await trader.handleSwap(swap);
+    } catch (err) {
+      log.error(MODULE, `Error handling swap: ${err}`);
     }
-
-    evaluating = false;
-  }
-
-  // Hook scanner to evaluation pipeline
-  scanner.onNewToken = (pair: TokenPair) => {
-    evaluationQueue.push(pair);
-    processQueue();
   };
 
   // Start all systems
-  scanner.start();
+  monitor.start();
   trader.startPriceMonitor();
+  seeder.start();
 
-  // Periodic status display (console only)
+  // Send Telegram start alert
+  await telegram.sendStartedAlert(monitor.walletCount);
+
+  // Periodic status display
   const statusInterval = setInterval(() => {
     trader.printStatus();
+    log.info(MODULE, `Wallets: ${monitor.walletCount}/${CONFIG.MAX_WATCHED_WALLETS}`);
   }, STATUS_INTERVAL_MS);
+
+  // Periodic memory cleanup
+  const pruneInterval = setInterval(() => {
+    monitor.pruneSeenSignatures();
+  }, PRUNE_INTERVAL_MS);
 
   // Graceful shutdown
   const shutdown = async (reason: string) => {
     log.info(MODULE, 'Shutting down...');
-    scanner.stop();
+    monitor.stop();
     trader.stopPriceMonitor();
+    seeder.stop();
     clearInterval(statusInterval);
+    clearInterval(pruneInterval);
 
     trader.printStatus();
     await telegram.sendStoppedAlert(reason);
 
-    log.banner('SOL1 — Shutdown Complete');
+    log.banner('COPYBOT — Shutdown Complete');
     process.exit(0);
   };
 
   process.on('SIGINT', () => shutdown('Manual stop (SIGINT)'));
   process.on('SIGTERM', () => shutdown('Process terminated (SIGTERM)'));
 
-  // ── Crash protection for Railway / long-running deploy ──
+  // Crash protection
   process.on('uncaughtException', async (err) => {
     log.error(MODULE, `Uncaught exception: ${err.message}`);
     log.error(MODULE, err.stack ?? '');
-    await telegram.sendStoppedAlert(`Crash: ${err.message}`);
+    try {
+      await telegram.sendStoppedAlert(`Crash: ${err.message}`);
+    } catch (_) { /* best-effort */ }
   });
   process.on('unhandledRejection', async (reason) => {
     log.error(MODULE, `Unhandled rejection: ${reason}`);
-    await telegram.sendStoppedAlert(`Crash: unhandled rejection — ${reason}`);
+    try {
+      await telegram.sendStoppedAlert(`Crash: unhandled rejection — ${reason}`);
+    } catch (_) { /* best-effort */ }
   });
 
-  log.success(MODULE, 'All systems online — scanning for new tokens...');
+  log.success(MODULE, 'All systems online — monitoring wallets for trades...');
 
-  // Keep the process alive indefinitely
+  // Keep alive
   await new Promise(() => {});
-}
-
-// ── Entry quality filter ──
-// Only enter trades that look "extremely promising"
-
-function isHighQualityEntry(pair: TokenPair): boolean {
-  const reasons: string[] = [];
-
-  // Must have meaningful volume
-  const vol5m = pair.volume?.m5 ?? 0;
-  if (vol5m < CONFIG.MIN_5M_VOLUME_USD) {
-    return false;
-  }
-
-  // Must have positive price action
-  const priceChange5m = pair.priceChange?.m5 ?? 0;
-  if (priceChange5m < 0) {
-    return false;
-  }
-
-  // Buy pressure must be strong
-  const buys5m = pair.txns?.m5?.buys ?? 0;
-  const sells5m = pair.txns?.m5?.sells ?? 0;
-  if (sells5m > 0) {
-    const ratio = buys5m / sells5m;
-    if (ratio < CONFIG.MIN_BUY_SELL_RATIO) {
-      return false;
-    }
-    reasons.push(`Buy/sell ratio: ${ratio.toFixed(1)}:1`);
-  }
-
-  // Must have minimum liquidity
-  const liq = pair.liquidity?.usd ?? 0;
-  if (liq < CONFIG.MIN_LIQUIDITY_USD) {
-    return false;
-  }
-  reasons.push(`Liquidity: $${liq.toFixed(0)}`);
-
-  // Bonus: strong volume/liquidity ratio indicates hype
-  const volLiqRatio = vol5m / liq;
-  if (volLiqRatio > 0.1) {
-    reasons.push(`Vol/Liq ratio: ${volLiqRatio.toFixed(2)} (strong hype)`);
-  }
-
-  if (reasons.length > 0) {
-    log.info('ENTRY', `Quality signals for ${pair.baseToken.symbol}: ${reasons.join(' | ')}`);
-  }
-
-  return true;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ── Launch ──
+// Launch
 main().catch(async (err) => {
   log.error(MODULE, `Fatal error: ${err}`);
   try {

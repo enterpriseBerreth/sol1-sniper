@@ -1,5 +1,17 @@
 import 'dotenv/config';
 
+// Extract Helius API key from RPC URL
+function extractHeliusKey(rpcUrl: string): string {
+  try {
+    const url = new URL(rpcUrl);
+    return url.searchParams.get('api-key') || '';
+  } catch {
+    return '';
+  }
+}
+
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=';
+
 export const CONFIG = {
   // ── Mode ──
   PAPER_TRADE: process.env.PAPER_TRADE !== 'false',
@@ -9,46 +21,42 @@ export const CONFIG = {
   TRADE_SIZE_USD: 30,
   MAX_CONCURRENT_TRADES: 3,
 
-  // ── Scanner ──
-  SCAN_INTERVAL_MS: 10_000,
-  PRICE_UPDATE_INTERVAL_MS: 5_000,
-  MAX_TOKEN_AGE_MINUTES: 30,
+  // ── Watched Wallets (starting set) ──
+  WATCHED_WALLETS: (process.env.WATCHED_WALLETS || [
+    '4nvNc7dDEqKKLM4Sr9Kgk3t1of6f8G66kT64VoC95LYh',
+    'kiLogfWUXp7nby7Xi6R9t7u8ERQyRdAzg6wBjvuE49uA',
+    'UEQxhkAVz71w2WBa9BYSoZrydhYNJaKmfNomoNs9E4t',
+  ].join(',')).split(',').map(w => w.trim()).filter(Boolean),
 
-  // ── Safety Thresholds ──
-  MIN_LIQUIDITY_USD: 5_000,
-  MIN_SAFETY_SCORE: 80,
-  MAX_SINGLE_HOLDER_PCT: 10,
-  MIN_HOLDERS: 30,
-  MAX_TOP10_HOLDER_PCT: 40,
+  // ── Wallet Seeder ──
+  MAX_WATCHED_WALLETS: 10,
+  SEEDER_INTERVAL_MS: 5 * 60_000,       // Check for new wallets every 5 min
+  SEEDER_MIN_COBUYS: 2,                  // Min co-buys before seeding a wallet
+  SEEDER_LOOKBACK_SIGS: 20,              // Signatures to check per token
 
-  // ── Entry Criteria ──
-  MIN_ENTRY_SCORE: 80,
-  MIN_5M_VOLUME_USD: 1_000,
-  MIN_BUY_SELL_RATIO: 1.5,
+  // ── Monitoring ──
+  WALLET_POLL_INTERVAL_MS: 5_000,        // Poll wallets every 5 seconds
+  PRICE_UPDATE_INTERVAL_MS: 5_000,       // Update prices every 5 seconds
+  MAX_SIGS_PER_POLL: 10,                 // Max signatures to fetch per wallet poll
+  TX_PARSE_BATCH_SIZE: 5,                // Batch size for Helius parse API
 
-  // ── Exit Strategy ──
-  INITIAL_STOP_LOSS_PCT: 20,
-  TRAILING_STOP_TIERS: [
-    { activateAbovePct: 30, trailDistancePct: 15 },
-    { activateAbovePct: 75, trailDistancePct: 12 },
-    { activateAbovePct: 150, trailDistancePct: 10 },
-    { activateAbovePct: 300, trailDistancePct: 8 },
-  ],
-  TAKE_PROFIT_LEVELS: [
-    { triggerPct: 100, sellPct: 25 },
-    { triggerPct: 200, sellPct: 25 },
-    { triggerPct: 500, sellPct: 25 },
-  ],
-  MAX_HOLD_TIME_MINUTES: 120,
-  STALE_EXIT_MINUTES: 30,
-  STALE_EXIT_MIN_GAIN_PCT: 10,
+  // ── Safety Exits (fallback when wallet doesn't exit) ──
+  MAX_HOLD_TIME_MINUTES: 240,            // Force exit after 4 hours
+  EMERGENCY_STOP_LOSS_PCT: 50,           // Force exit if down 50%
 
   // ── API Endpoints ──
-  SOLANA_RPC_URL: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
-  DEXSCREENER_BASE: 'https://api.dexscreener.com',
+  SOLANA_RPC_URL,
+  HELIUS_API_KEY: process.env.HELIUS_API_KEY || extractHeliusKey(SOLANA_RPC_URL),
+  HELIUS_API_BASE: 'https://api.helius.dev',
   JUPITER_PRICE_API: 'https://api.jup.ag/price/v2',
+  DEXSCREENER_BASE: 'https://api.dexscreener.com',
 
   // ── Telegram ──
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
+
+  // ── Constants ──
+  SOL_MINT: 'So11111111111111111111111111111111111111112',
+  WSOL_MINT: 'So11111111111111111111111111111111111111112',
+  LAMPORTS_PER_SOL: 1_000_000_000,
 } as const;
