@@ -20,71 +20,41 @@ export class TelegramAlert {
     }
   }
 
-  // ── TRADE CLOSED alert (sent AFTER exit only) ──
+  // ── ALERT 1: TRADE MADE ──
 
   async sendTradeAlert(data: {
-    copiedWallet: string;
     tokenName: string;
+    safetyScore: number;
     capitalBeforeBuy: number;
     capitalAfterSell: number;
     pnlUsd: number;
     pnlPct: number;
   }): Promise<void> {
-    const pnlEmoji = data.pnlUsd >= 0 ? '\u{1F7E2}' : '\u{1F534}';
+    const pnlEmoji = data.pnlUsd >= 0 ? '🟢' : '🔴';
     const sign = data.pnlUsd >= 0 ? '+' : '';
 
     const msg = [
-      `${pnlEmoji} *COPYBOT \\- TRADE CLOSED*`,
+      `${pnlEmoji} *SOL1 — TRADE MADE*`,
       ``,
-      `*Copied Wallet:* ${this.esc(data.copiedWallet)}`,
       `*Token:* ${this.esc(data.tokenName)}`,
-      `*Capital Before Buy:* \\$${data.capitalBeforeBuy.toFixed(2)}`,
-      `*Capital After Sell:* \\$${data.capitalAfterSell.toFixed(2)}`,
-      `*PNL:* ${sign}\\$${Math.abs(data.pnlUsd).toFixed(2)}`,
+      `*Safety Score:* ${data.safetyScore}/100`,
+      `*Capital Before Buy:* $${data.capitalBeforeBuy.toFixed(2)}`,
+      `*Capital After Sell:* $${data.capitalAfterSell.toFixed(2)}`,
+      `*PNL:* ${sign}$${data.pnlUsd.toFixed(2)}`,
       `*PNL %:* ${sign}${data.pnlPct.toFixed(2)}%`,
     ].join('\n');
 
     await this.send(msg);
   }
 
-  // ── BOT STOPPED alert ──
+  // ── ALERT 2: BOT STOPPED / CRASHED ──
 
   async sendStoppedAlert(reason: string): Promise<void> {
     const msg = [
-      `\u{1F6D1} *COPYBOT \\- BOT STOPPED*`,
+      `🛑 *SOL1 — BOT STOPPED*`,
       ``,
       `*Reason:* ${this.esc(reason)}`,
-      `*Mode:* ${CONFIG.PAPER_TRADE ? '\u{1F4DD} Paper Trade' : '\u{1F4B0} LIVE'}`,
-    ].join('\n');
-
-    await this.send(msg);
-  }
-
-  // ── BOT STARTED alert ──
-
-  async sendStartedAlert(walletCount: number): Promise<void> {
-    const msg = [
-      `\u{1F680} *COPYBOT \\- STARTED*`,
-      ``,
-      `*Mode:* ${CONFIG.PAPER_TRADE ? '\u{1F4DD} Paper Trade' : '\u{1F4B0} LIVE'}`,
-      `*Budget:* \\$${CONFIG.STARTING_BUDGET_USD}`,
-      `*Trade Size:* \\$${CONFIG.TRADE_SIZE_USD}`,
-      `*Max Concurrent:* ${CONFIG.MAX_CONCURRENT_TRADES}`,
-      `*Wallets Watched:* ${walletCount}`,
-    ].join('\n');
-
-    await this.send(msg);
-  }
-
-  // ── WALLET SEEDED alert ──
-
-  async sendWalletSeededAlert(walletLabel: string, coBuys: number, totalWallets: number): Promise<void> {
-    const msg = [
-      `\u{1F50D} *COPYBOT \\- NEW WALLET SEEDED*`,
-      ``,
-      `*Wallet:* ${this.esc(walletLabel)}`,
-      `*Co\\-buys detected:* ${coBuys}`,
-      `*Total wallets watched:* ${totalWallets}/${CONFIG.MAX_WATCHED_WALLETS}`,
+      `*Mode:* ${CONFIG.PAPER_TRADE ? '📝 Paper Trade' : '💰 LIVE'}`,
     ].join('\n');
 
     await this.send(msg);
@@ -103,7 +73,7 @@ export class TelegramAlert {
         body: JSON.stringify({
           chat_id: this.chatId,
           text,
-          parse_mode: 'MarkdownV2',
+          parse_mode: 'Markdown',
           disable_web_page_preview: true,
         }),
         signal: AbortSignal.timeout(10_000),
@@ -118,8 +88,7 @@ export class TelegramAlert {
     }
   }
 
-  // MarkdownV2 escape
   private esc(text: string): string {
-    return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+    return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
   }
 }

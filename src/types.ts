@@ -1,140 +1,113 @@
-// ── Copytrade Types ──
+// ── Token & Pair Data ──
 
-export interface WatchedWallet {
-  address: string;
-  label: string;
-  addedAt: number;
-  source: 'manual' | 'seeded';
-  stats: WalletStats;
-}
-
-export interface WalletStats {
-  tradesDetected: number;
-  tradesCopied: number;
-  totalPnlUsd: number;
-  winCount: number;
-  lossCount: number;
-}
-
-// ── Helius Enhanced Transaction ──
-
-export interface HeliusTransaction {
-  description: string;
-  type: string;
-  source: string;
-  fee: number;
-  feePayer: string;
-  signature: string;
-  slot: number;
-  timestamp: number;
-  nativeTransfers: NativeTransfer[];
-  tokenTransfers: TokenTransfer[];
-  events?: {
-    swap?: SwapEvent;
+export interface TokenPair {
+  chainId: string;
+  dexId: string;
+  pairAddress: string;
+  baseToken: {
+    address: string;
+    name: string;
+    symbol: string;
+  };
+  quoteToken: {
+    address: string;
+    name: string;
+    symbol: string;
+  };
+  priceUsd: string;
+  priceNative: string;
+  liquidity?: { usd: number; base: number; quote: number };
+  fdv?: number;
+  marketCap?: number;
+  pairCreatedAt?: number;
+  volume?: { h24: number; h6: number; h1: number; m5: number };
+  priceChange?: { h24: number; h6: number; h1: number; m5: number };
+  txns?: {
+    h24: { buys: number; sells: number };
+    h6: { buys: number; sells: number };
+    h1: { buys: number; sells: number };
+    m5: { buys: number; sells: number };
+  };
+  info?: {
+    imageUrl?: string;
+    websites?: { url: string }[];
+    socials?: { type: string; url: string }[];
   };
 }
 
-export interface NativeTransfer {
-  fromUserAccount: string;
-  toUserAccount: string;
-  amount: number;
+// ── Safety Check Result ──
+
+export interface SafetyResult {
+  score: number;
+  passed: boolean;
+  checks: SafetyCheck[];
+  flags: string[];
 }
 
-export interface TokenTransfer {
-  fromTokenAccount: string;
-  toTokenAccount: string;
-  fromUserAccount: string;
-  toUserAccount: string;
-  tokenAmount: number;
-  mint: string;
-  tokenStandard: string;
+export interface SafetyCheck {
+  name: string;
+  passed: boolean;
+  score: number;
+  maxScore: number;
+  detail: string;
 }
 
-export interface SwapEvent {
-  nativeInput: { account: string; amount: string } | null;
-  nativeOutput: { account: string; amount: string } | null;
-  tokenInputs: SwapTokenInfo[];
-  tokenOutputs: SwapTokenInfo[];
-  tokenFees: unknown[];
-  nativeFees: unknown[];
-  innerSwaps: unknown[];
-}
+// ── Token Evaluation ──
 
-export interface SwapTokenInfo {
-  userAccount: string;
-  tokenAccount: string;
-  mint: string;
-  rawTokenAmount: {
-    tokenAmount: string;
-    decimals: number;
-  };
-}
-
-// ── Detected Wallet Action ──
-
-export type SwapDirection = 'BUY' | 'SELL';
-
-export interface DetectedSwap {
-  walletAddress: string;
-  walletLabel: string;
-  direction: SwapDirection;
-  tokenMint: string;
-  tokenSymbol: string;
-  tokenName: string;
-  solAmount: number;
-  tokenAmount: number;
-  priceUsd: number;
-  signature: string;
+export interface TokenEvaluation {
+  token: TokenPair;
+  safetyResult: SafetyResult;
+  entryScore: number;
+  reasons: string[];
   timestamp: number;
 }
 
-// ── Paper Trade Position ──
+// ── Position / Trade ──
 
-export type PositionStatus = 'open' | 'closed';
+export type PositionStatus = 'open' | 'closed' | 'partial';
 
-export interface CopyPosition {
+export interface Position {
   id: string;
-  copiedWallet: string;
-  copiedWalletLabel: string;
-  tokenMint: string;
+  tokenAddress: string;
   tokenSymbol: string;
   tokenName: string;
+  pairAddress: string;
 
-  entryPriceUsd: number;
-  currentPriceUsd: number;
-  exitPriceUsd: number;
+  entryPrice: number;
+  currentPrice: number;
+  highestPrice: number;
 
-  sizeUsd: number;
-  capitalBeforeBuy: number;
+  initialSizeUsd: number;
+  remainingSizeUsd: number;
+  soldUsd: number;
 
   entryTime: number;
-  exitTime: number;
+  lastUpdate: number;
 
   status: PositionStatus;
   pnlUsd: number;
   pnlPct: number;
 
-  exitReason: string;
+  safetyScore: number;
+  capitalBeforeBuy: number;
+
+  takeProfitLevelsHit: number[];
+  trailingStopPrice: number;
+
+  exitReason?: string;
 }
 
-// ── Token Info Cache ──
+// ── Trade Action ──
 
-export interface TokenInfo {
-  mint: string;
-  symbol: string;
-  name: string;
-  priceUsd: number;
-  lastUpdated: number;
-}
+export type TradeAction = 'BUY' | 'SELL' | 'PARTIAL_SELL';
 
-// ── Wallet Seeder Candidate ──
-
-export interface SeederCandidate {
-  address: string;
-  coBuyCount: number;
-  coBuyTokens: string[];
-  firstSeen: number;
-  lastSeen: number;
+export interface TradeEvent {
+  action: TradeAction;
+  position: Position;
+  amountUsd: number;
+  price: number;
+  reason: string;
+  timestamp: number;
 }
 
 // ── Bot State ──
@@ -143,9 +116,7 @@ export interface BotState {
   budgetRemaining: number;
   totalPnl: number;
   tradesExecuted: number;
-  positions: Map<string, CopyPosition>;
-  closedPositions: CopyPosition[];
+  positions: Map<string, Position>;
+  seenTokens: Set<string>;
   startTime: number;
-  wins: number;
-  losses: number;
 }
