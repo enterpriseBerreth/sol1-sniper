@@ -24,8 +24,9 @@ export class TelegramAlert {
 
   async sendTradeAlert(data: {
     tokenName: string;
-    startingBudget: number;
-    endingBudget: number;
+    safetyScore: number;
+    capitalBeforeBuy: number;
+    capitalAfterSell: number;
     pnlUsd: number;
     pnlPct: number;
   }): Promise<void> {
@@ -36,8 +37,9 @@ export class TelegramAlert {
       `${pnlEmoji} *SOL1 — TRADE MADE*`,
       ``,
       `*Token:* ${this.esc(data.tokenName)}`,
-      `*Starting Budget:* $${data.startingBudget.toFixed(2)}`,
-      `*Ending Budget:* $${data.endingBudget.toFixed(2)}`,
+      `*Safety Score:* ${data.safetyScore}/100`,
+      `*Capital Before Buy:* $${data.capitalBeforeBuy.toFixed(2)}`,
+      `*Capital After Sell:* $${data.capitalAfterSell.toFixed(2)}`,
       `*PNL:* ${sign}$${data.pnlUsd.toFixed(2)}`,
       `*PNL %:* ${sign}${data.pnlPct.toFixed(2)}%`,
     ].join('\n');

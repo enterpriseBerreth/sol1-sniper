@@ -89,6 +89,8 @@ export class PaperTrader {
       status: 'open',
       pnlUsd: 0,
       pnlPct: 0,
+      safetyScore: safetyResult.score,
+      capitalBeforeBuy: this.state.budgetRemaining + sizeUsd,
       takeProfitLevelsHit: [],
       trailingStopPrice: price * (1 - CONFIG.INITIAL_STOP_LOSS_PCT / 100),
     };
@@ -284,19 +286,18 @@ export class PaperTrader {
     };
     this.tradeLog.push(event);
 
-    // Telegram: TRADE MADE alert
+    // Telegram: TRADE MADE alert (only on full close)
     await this.telegram.sendTradeAlert({
       tokenName: `${position.tokenSymbol} (${position.tokenName})`,
-      startingBudget: budgetBefore,
-      endingBudget: this.state.budgetRemaining,
+      safetyScore: position.safetyScore,
+      capitalBeforeBuy: position.capitalBeforeBuy,
+      capitalAfterSell: this.state.budgetRemaining,
       pnlUsd: totalPnl,
       pnlPct: totalPnlPct,
     });
   }
 
   private async executePartialSell(position: Position, amountUsd: number, reason: string): Promise<void> {
-    const budgetBefore = this.state.budgetRemaining;
-
     const pnlOnSell = amountUsd * (position.pnlPct / 100);
     const proceeds = amountUsd + pnlOnSell;
 
@@ -325,16 +326,6 @@ export class PaperTrader {
       timestamp: Date.now(),
     };
     this.tradeLog.push(event);
-
-    // Telegram: TRADE MADE alert
-    const pnlPct = (pnlOnSell / amountUsd) * 100;
-    await this.telegram.sendTradeAlert({
-      tokenName: `${position.tokenSymbol} (${position.tokenName})`,
-      startingBudget: budgetBefore,
-      endingBudget: this.state.budgetRemaining,
-      pnlUsd: pnlOnSell,
-      pnlPct,
-    });
   }
 
   // ── Status & Reporting ──

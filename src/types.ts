@@ -88,6 +88,9 @@ export interface Position {
   pnlUsd: number;
   pnlPct: number;
 
+  safetyScore: number;
+  capitalBeforeBuy: number;
+
   takeProfitLevelsHit: number[];
   trailingStopPrice: number;
 
