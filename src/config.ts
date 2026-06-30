@@ -16,7 +16,7 @@ export const CONFIG = {
 
   // ── Safety Thresholds ──
   MIN_LIQUIDITY_USD: 5_000,
-  MIN_SAFETY_SCORE: 80,
+  MIN_SAFETY_SCORE: 77,
   MAX_SINGLE_HOLDER_PCT: 10,
   MIN_HOLDERS: 30,
   MAX_TOP10_HOLDER_PCT: 40,
