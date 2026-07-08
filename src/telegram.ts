@@ -14,44 +14,131 @@ export class TelegramAlert {
     this.enabled = !!(this.botToken && this.chatId);
 
     if (!this.enabled) {
-      log.warn(MODULE, 'Telegram not configured — alerts will only show in console');
+      log.warn(MODULE, 'Telegram not configured - alerts will only show in console');
     } else {
       log.success(MODULE, 'Telegram alerts enabled');
     }
   }
 
-  // ── ALERT 1: TRADE MADE ──
+  // ── BUY Alert ──
 
-  async sendTradeAlert(data: {
+  async sendBuyAlert(data: {
     tokenName: string;
-    safetyScore: number;
-    capitalBeforeBuy: number;
-    capitalAfterSell: number;
-    pnlUsd: number;
-    pnlPct: number;
+    mint: string;
+    priceUsd: number;
+    sizeUsd: number;
+    uniqueBuyers: number;
+    marketCapUsd: number;
+    budgetRemaining: number;
   }): Promise<void> {
-    const pnlEmoji = data.pnlUsd >= 0 ? '🟢' : '🔴';
-    const sign = data.pnlUsd >= 0 ? '+' : '';
-
     const msg = [
-      `${pnlEmoji} *SOL1 — TRADE MADE*`,
+      `🟢 *PUMPFUNBOT — BUY*`,
       ``,
       `*Token:* ${this.esc(data.tokenName)}`,
-      `*Safety Score:* ${data.safetyScore}/100`,
-      `*Capital Before Buy:* $${data.capitalBeforeBuy.toFixed(2)}`,
-      `*Capital After Sell:* $${data.capitalAfterSell.toFixed(2)}`,
-      `*PNL:* ${sign}$${data.pnlUsd.toFixed(2)}`,
-      `*PNL %:* ${sign}${data.pnlPct.toFixed(2)}%`,
+      `*Mint:* \`${data.mint.slice(0, 12)}...\``,
+      `*Price:* $${this.fmtPrice(data.priceUsd)}`,
+      `*Size:* $${data.sizeUsd.toFixed(2)}`,
+      `*Unique Buyers:* ${data.uniqueBuyers} (excl. dev)`,
+      `*Market Cap:* $${data.marketCapUsd.toFixed(0)}`,
+      `*Budget Left:* $${data.budgetRemaining.toFixed(2)}`,
     ].join('\n');
 
     await this.send(msg);
   }
 
-  // ── ALERT 2: BOT STOPPED / CRASHED ──
+  // ── SELL Alert (full close) ──
+
+  async sendSellAlert(data: {
+    tokenName: string;
+    mint: string;
+    entryPriceUsd: number;
+    exitPriceUsd: number;
+    pnlUsd: number;
+    pnlPct: number;
+    holdTime: string;
+    reason: string;
+    capitalBefore: number;
+    capitalAfter: number;
+    totalBotPnl: number;
+    winRate: number;
+  }): Promise<void> {
+    const pnlEmoji = data.pnlUsd >= 0 ? '🟢' : '🔴';
+    const sign = data.pnlUsd >= 0 ? '+' : '';
+
+    const msg = [
+      `${pnlEmoji} *PUMPFUNBOT — TRADE CLOSED*`,
+      ``,
+      `*Token:* ${this.esc(data.tokenName)}`,
+      `*Mint:* \`${data.mint.slice(0, 12)}...\``,
+      `*Entry:* $${this.fmtPrice(data.entryPriceUsd)}`,
+      `*Exit:* $${this.fmtPrice(data.exitPriceUsd)}`,
+      `*PNL:* ${sign}$${data.pnlUsd.toFixed(2)} (${sign}${data.pnlPct.toFixed(1)}%)`,
+      `*Hold Time:* ${data.holdTime}`,
+      `*Reason:* ${this.esc(data.reason)}`,
+      ``,
+      `📊 *Portfolio*`,
+      `*Capital Before:* $${data.capitalBefore.toFixed(2)}`,
+      `*Capital After:* $${data.capitalAfter.toFixed(2)}`,
+      `*Total Bot PNL:* ${data.totalBotPnl >= 0 ? '+' : ''}$${data.totalBotPnl.toFixed(2)}`,
+      `*Win Rate:* ${data.winRate.toFixed(0)}%`,
+    ].join('\n');
+
+    await this.send(msg);
+  }
+
+  // ── PARTIAL SELL Alert ──
+
+  async sendPartialSellAlert(data: {
+    tokenName: string;
+    mint: string;
+    soldUsd: number;
+    proceedsUsd: number;
+    pnlOnSell: number;
+    remainingUsd: number;
+    currentPriceUsd: number;
+    pnlPctFromEntry: number;
+    reason: string;
+  }): Promise<void> {
+    const sign = data.pnlOnSell >= 0 ? '+' : '';
+
+    const msg = [
+      `📤 *PUMPFUNBOT — PARTIAL SELL*`,
+      ``,
+      `*Token:* ${this.esc(data.tokenName)}`,
+      `*Sold:* $${data.soldUsd.toFixed(2)} → $${data.proceedsUsd.toFixed(2)}`,
+      `*PNL on sell:* ${sign}$${data.pnlOnSell.toFixed(2)}`,
+      `*Remaining:* $${data.remainingUsd.toFixed(2)} (riding for max profit)`,
+      `*Current Price:* $${this.fmtPrice(data.currentPriceUsd)}`,
+      `*Total PNL:* ${data.pnlPctFromEntry >= 0 ? '+' : ''}${data.pnlPctFromEntry.toFixed(1)}% from entry`,
+      `*Reason:* ${this.esc(data.reason)}`,
+    ].join('\n');
+
+    await this.send(msg);
+  }
+
+  // ── BOT STARTED Alert ──
+
+  async sendStartedAlert(budget: number): Promise<void> {
+    const msg = [
+      `🚀 *PUMPFUNBOT — STARTED*`,
+      ``,
+      `*Mode:* ${CONFIG.PAPER_TRADE ? '📝 Paper Trade' : '💰 LIVE'}`,
+      `*Budget:* $${budget.toFixed(2)}`,
+      `*Trade Size:* $${CONFIG.TRADE_SIZE_USD}`,
+      `*Min Buyers:* ${CONFIG.MIN_UNIQUE_BUYERS} (excl. dev)`,
+      `*Min Age:* ${CONFIG.MIN_TOKEN_AGE_SECONDS}s`,
+      `*Take Profit:* ${CONFIG.TAKE_PROFIT_LEVELS.map((l) => `+${l.triggerPct}%`).join(', ')}`,
+      `*Stop Loss:* -${CONFIG.INITIAL_STOP_LOSS_PCT}%`,
+    ].join('\n');
+
+    await this.send(msg);
+  }
+
+  // ── BOT STOPPED Alert ──
 
   async sendStoppedAlert(reason: string): Promise<void> {
     const msg = [
-      `🛑 *SOL1 — BOT STOPPED*`,
+      `🛑 *PUMPFUNBOT — STOPPED*`,
       ``,
       `*Reason:* ${this.esc(reason)}`,
       `*Mode:* ${CONFIG.PAPER_TRADE ? '📝 Paper Trade' : '💰 LIVE'}`,
@@ -90,5 +177,15 @@ export class TelegramAlert {
 
   private esc(text: string): string {
     return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+  }
+
+  private fmtPrice(price: number): string {
+    if (price === 0) return '0';
+    if (price < 0.0000001) return price.toExponential(4);
+    if (price < 0.00001) return price.toFixed(10);
+    if (price < 0.001) return price.toFixed(8);
+    if (price < 0.01) return price.toFixed(6);
+    if (price < 1) return price.toFixed(4);
+    return price.toFixed(2);
   }
 }

@@ -1,210 +1,362 @@
+import WebSocket from 'ws';
 import { CONFIG } from './config.js';
-import { TokenPair } from './types.js';
+import { TokenCandidate, PumpFunNewToken, PumpFunTrade } from './types.js';
 import { log } from './logger.js';
 
 const MODULE = 'SCANNER';
 
-// ── Fetch helpers ──
+// ── SOL price tracking ──
 
-async function fetchJSON<T>(url: string): Promise<T | null> {
+let solPriceUsd = 150; // Fallback, updated at runtime
+
+export function getSolPrice(): number {
+  return solPriceUsd;
+}
+
+export async function updateSolPrice(): Promise<number> {
   try {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await fetch(
+      `${CONFIG.JUPITER_PRICE_API}?ids=${CONFIG.SOL_MINT}`,
+      { signal: AbortSignal.timeout(8_000) }
+    );
+    if (!res.ok) return solPriceUsd;
+    const data = (await res.json()) as { data: Record<string, { price: string } | undefined> };
+    const price = parseFloat(data.data[CONFIG.SOL_MINT]?.price || '0');
+    if (price > 0) {
+      solPriceUsd = price;
+      log.info(MODULE, `SOL price updated: $${price.toFixed(2)}`);
+    }
+    return solPriceUsd;
+  } catch {
+    return solPriceUsd;
+  }
+}
+
+// ── Jupiter price lookup for tokens ──
+
+export async function fetchTokenPriceUsd(mint: string): Promise<number | null> {
+  try {
+    const res = await fetch(
+      `${CONFIG.JUPITER_PRICE_API}?ids=${mint}`,
+      { signal: AbortSignal.timeout(8_000) }
+    );
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    const data = (await res.json()) as { data: Record<string, { price: string } | undefined> };
+    const price = parseFloat(data.data[mint]?.price || '0');
+    return price > 0 ? price : null;
   } catch {
     return null;
   }
 }
 
-// ── DexScreener latest token profiles ──
-
-interface DexScreenerProfile {
-  url: string;
-  chainId: string;
-  tokenAddress: string;
-  icon?: string;
-  description?: string;
-}
-
-async function fetchLatestProfiles(): Promise<DexScreenerProfile[]> {
-  const data = await fetchJSON<DexScreenerProfile[]>(
-    `${CONFIG.DEXSCREENER_BASE}/token-profiles/latest/v1`
-  );
-  if (!data || !Array.isArray(data)) return [];
-  return data.filter((p) => p.chainId === 'solana');
-}
-
-// ── DexScreener latest boosted tokens ──
-
-interface DexScreenerBoost {
-  url: string;
-  chainId: string;
-  tokenAddress: string;
-  amount: number;
-  totalAmount: number;
-}
-
-async function fetchLatestBoosts(): Promise<DexScreenerBoost[]> {
-  const data = await fetchJSON<DexScreenerBoost[]>(
-    `${CONFIG.DEXSCREENER_BASE}/token-boosts/latest/v1`
-  );
-  if (!data || !Array.isArray(data)) return [];
-  return data.filter((b) => b.chainId === 'solana');
-}
-
-// ── Fetch full pair data for a token ──
-
-interface DexScreenerPairsResponse {
-  pairs: TokenPair[] | null;
-}
-
-export async function fetchTokenPairs(tokenAddress: string): Promise<TokenPair[]> {
-  const data = await fetchJSON<DexScreenerPairsResponse>(
-    `${CONFIG.DEXSCREENER_BASE}/latest/dex/tokens/${tokenAddress}`
-  );
-  if (!data?.pairs) return [];
-  return data.pairs.filter((p) => p.chainId === 'solana');
-}
-
-// ── Jupiter price lookup ──
-
-interface JupiterPriceResponse {
-  data: Record<string, { id: string; price: string } | undefined>;
-}
-
-export async function fetchJupiterPrices(mints: string[]): Promise<Map<string, number>> {
+export async function fetchMultipleTokenPrices(mints: string[]): Promise<Map<string, number>> {
   const prices = new Map<string, number>();
   if (mints.length === 0) return prices;
 
-  const ids = mints.join(',');
-  const data = await fetchJSON<JupiterPriceResponse>(
-    `${CONFIG.JUPITER_PRICE_API}?ids=${ids}`
-  );
-  if (!data?.data) return prices;
-
-  for (const [mint, info] of Object.entries(data.data)) {
-    if (info?.price) {
-      prices.set(mint, parseFloat(info.price));
+  try {
+    const ids = mints.join(',');
+    const res = await fetch(
+      `${CONFIG.JUPITER_PRICE_API}?ids=${ids}`,
+      { signal: AbortSignal.timeout(10_000) }
+    );
+    if (!res.ok) return prices;
+    const data = (await res.json()) as { data: Record<string, { price: string } | undefined> };
+    for (const [mint, info] of Object.entries(data.data)) {
+      if (info?.price) {
+        const p = parseFloat(info.price);
+        if (p > 0) prices.set(mint, p);
+      }
     }
-  }
+  } catch { /* best effort */ }
+
   return prices;
 }
 
-// ── Pick the best pair for a token ──
+// ── Main Scanner Class ──
 
-function pickBestPair(pairs: TokenPair[]): TokenPair | null {
-  if (pairs.length === 0) return null;
-  return pairs
-    .filter((p) => (p.liquidity?.usd ?? 0) > 0)
-    .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0] ?? null;
-}
+export class PumpFunScanner {
+  private ws: WebSocket | null = null;
+  private candidates = new Map<string, TokenCandidate>();
+  private reconnectDelay: number = CONFIG.WS_RECONNECT_DELAY_MS;
+  private shouldRun = false;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private solPriceInterval: ReturnType<typeof setInterval> | null = null;
+  private subscribedTokens = new Set<string>();
 
-// ── Check if a token is new enough to snipe ──
+  // Callback when a token qualifies for buying
+  onQualifiedToken: ((candidate: TokenCandidate) => void) | null = null;
+  // Callback for price updates on tokens we hold
+  onPriceUpdate: ((mint: string, priceSol: number, priceUsd: number, marketCapSol: number) => void) | null = null;
 
-function isNewEnough(pair: TokenPair): boolean {
-  if (!pair.pairCreatedAt) return false;
-  const ageMs = Date.now() - pair.pairCreatedAt;
-  return ageMs < CONFIG.MAX_TOKEN_AGE_MINUTES * 60 * 1000;
-}
+  async start(): Promise<void> {
+    this.shouldRun = true;
 
-// ── Main scanner class ──
+    // Fetch SOL price first
+    await updateSolPrice();
 
-export class TokenScanner {
-  private seenTokens = new Set<string>();
-  private interval: ReturnType<typeof setInterval> | null = null;
+    // Periodically update SOL price
+    this.solPriceInterval = setInterval(() => updateSolPrice(), 60_000);
 
-  onNewToken: ((pair: TokenPair) => void) | null = null;
+    // Periodically clean up stale candidates
+    this.cleanupInterval = setInterval(() => this.cleanupCandidates(), 30_000);
 
-  start() {
-    log.info(MODULE, `Starting scanner — polling every ${CONFIG.SCAN_INTERVAL_MS / 1000}s`);
-    this.scan();
-    this.interval = setInterval(() => this.scan(), CONFIG.SCAN_INTERVAL_MS);
+    // Connect to WebSocket
+    this.connect();
   }
 
-  stop() {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
+  stop(): void {
+    this.shouldRun = false;
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    if (this.solPriceInterval) {
+      clearInterval(this.solPriceInterval);
+      this.solPriceInterval = null;
     }
     log.info(MODULE, 'Scanner stopped');
   }
 
-  markSeen(address: string) {
-    this.seenTokens.add(address);
-  }
-
-  private async scan() {
-    try {
-      const [profiles, boosts] = await Promise.all([
-        fetchLatestProfiles(),
-        fetchLatestBoosts(),
-      ]);
-
-      // Collect unique new token addresses
-      const candidateAddresses = new Set<string>();
-      for (const p of profiles) {
-        if (!this.seenTokens.has(p.tokenAddress)) {
-          candidateAddresses.add(p.tokenAddress);
-        }
-      }
-      for (const b of boosts) {
-        if (!this.seenTokens.has(b.tokenAddress)) {
-          candidateAddresses.add(b.tokenAddress);
-        }
-      }
-
-      if (candidateAddresses.size === 0) return;
-
-      log.info(MODULE, `Found ${candidateAddresses.size} new candidate(s) — fetching pair data...`);
-
-      // Fetch pair data for all candidates (batch in groups of 5)
-      const addresses = Array.from(candidateAddresses);
-      const batchSize = 5;
-
-      for (let i = 0; i < addresses.length; i += batchSize) {
-        const batch = addresses.slice(i, i + batchSize);
-        const results = await Promise.all(batch.map((addr) => fetchTokenPairs(addr)));
-
-        for (let j = 0; j < batch.length; j++) {
-          const addr = batch[j];
-          this.seenTokens.add(addr);
-
-          const pairs = results[j];
-          const best = pickBestPair(pairs);
-
-          if (!best) continue;
-          if (!isNewEnough(best)) {
-            log.info(MODULE, `${best.baseToken.symbol} — too old, skipping`);
-            continue;
-          }
-
-          const liqUsd = best.liquidity?.usd ?? 0;
-          if (liqUsd < CONFIG.MIN_LIQUIDITY_USD) {
-            log.info(MODULE, `${best.baseToken.symbol} — liquidity $${liqUsd.toFixed(0)} too low, skipping`);
-            continue;
-          }
-
-          log.success(
-            MODULE,
-            `New candidate: ${best.baseToken.symbol} | Price: $${best.priceUsd} | Liq: $${liqUsd.toFixed(0)} | Age: ${this.formatAge(best.pairCreatedAt)}`
-          );
-
-          this.onNewToken?.(best);
-        }
-      }
-    } catch (err) {
-      log.error(MODULE, `Scan error: ${err}`);
+  // Subscribe to trade events for a specific token (used after buying)
+  subscribeToToken(mint: string): void {
+    if (this.subscribedTokens.has(mint)) return;
+    this.subscribedTokens.add(mint);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        method: 'subscribeTokenTrade',
+        keys: [mint],
+      }));
+      log.info(MODULE, `Subscribed to trades for ${mint.slice(0, 8)}...`);
     }
   }
 
-  private formatAge(createdAt?: number): string {
-    if (!createdAt) return 'unknown';
-    const mins = Math.floor((Date.now() - createdAt) / 60_000);
-    if (mins < 1) return '<1m';
-    if (mins < 60) return `${mins}m`;
-    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  unsubscribeFromToken(mint: string): void {
+    this.subscribedTokens.delete(mint);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        method: 'unsubscribeTokenTrade',
+        keys: [mint],
+      }));
+    }
+  }
+
+  getCandidateCount(): number {
+    return this.candidates.size;
+  }
+
+  // ── WebSocket Connection ──
+
+  private connect(): void {
+    if (!this.shouldRun) return;
+
+    log.info(MODULE, `Connecting to PumpPortal WebSocket...`);
+
+    this.ws = new WebSocket(CONFIG.PUMPFUN_WS_URL);
+
+    this.ws.on('open', () => {
+      log.success(MODULE, 'Connected to PumpPortal WebSocket');
+      this.reconnectDelay = CONFIG.WS_RECONNECT_DELAY_MS;
+
+      // Subscribe to new token creation events
+      this.ws!.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      log.info(MODULE, 'Subscribed to new token events');
+
+      // Re-subscribe to any tokens we were tracking
+      for (const mint of this.subscribedTokens) {
+        this.ws!.send(JSON.stringify({
+          method: 'subscribeTokenTrade',
+          keys: [mint],
+        }));
+      }
+
+      // Subscribe to trades for all active candidates
+      const candidateMints = Array.from(this.candidates.keys()).filter(
+        (m) => !this.subscribedTokens.has(m)
+      );
+      if (candidateMints.length > 0) {
+        this.ws!.send(JSON.stringify({
+          method: 'subscribeTokenTrade',
+          keys: candidateMints,
+        }));
+      }
+    });
+
+    this.ws.on('message', (data: WebSocket.Data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        this.handleMessage(msg);
+      } catch {
+        // Ignore malformed messages
+      }
+    });
+
+    this.ws.on('error', (err: Error) => {
+      log.error(MODULE, `WebSocket error: ${err.message}`);
+    });
+
+    this.ws.on('close', () => {
+      log.warn(MODULE, 'WebSocket disconnected');
+      if (this.shouldRun) {
+        log.info(MODULE, `Reconnecting in ${this.reconnectDelay / 1000}s...`);
+        setTimeout(() => this.connect(), this.reconnectDelay);
+        this.reconnectDelay = Math.min(
+          this.reconnectDelay * 1.5,
+          CONFIG.WS_MAX_RECONNECT_DELAY_MS
+        );
+      }
+    });
+  }
+
+  // ── Message Handler ──
+
+  private handleMessage(msg: Record<string, unknown>): void {
+    // New token creation event
+    if ('mint' in msg && 'initialBuy' in msg && 'traderPublicKey' in msg && 'name' in msg) {
+      this.handleNewToken(msg as unknown as PumpFunNewToken);
+      return;
+    }
+
+    // Trade event
+    if ('mint' in msg && 'txType' in msg && 'traderPublicKey' in msg && 'signature' in msg) {
+      this.handleTrade(msg as unknown as PumpFunTrade);
+      return;
+    }
+  }
+
+  // ── New Token Handler ──
+
+  private handleNewToken(token: PumpFunNewToken): void {
+    if (this.candidates.has(token.mint)) return;
+
+    const priceSol = token.marketCapSol / CONFIG.PUMPFUN_TOTAL_SUPPLY;
+    const priceUsd = priceSol * solPriceUsd;
+
+    const candidate: TokenCandidate = {
+      mint: token.mint,
+      name: token.name,
+      symbol: token.symbol,
+      devWallet: token.traderPublicKey,
+      createdAt: Date.now(),
+      uniqueBuyers: new Set<string>(),
+      buyCount: 0,
+      sellCount: 0,
+      latestMarketCapSol: token.marketCapSol,
+      latestPriceSol: priceSol,
+      latestPriceUsd: priceUsd,
+      totalBuyVolumeSol: 0,
+      lastTradeAt: Date.now(),
+      qualified: false,
+    };
+
+    // If dev made an initial buy, don't count them as a unique buyer
+    if (token.initialBuy > 0) {
+      candidate.buyCount = 1; // Dev's buy
+    }
+
+    this.candidates.set(token.mint, candidate);
+
+    log.info(
+      MODULE,
+      `New token: ${token.symbol} (${token.name}) | Mint: ${token.mint.slice(0, 8)}... | Dev: ${token.traderPublicKey.slice(0, 8)}... | MCap: ${token.marketCapSol.toFixed(2)} SOL`
+    );
+
+    // Subscribe to trades for this token
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        method: 'subscribeTokenTrade',
+        keys: [token.mint],
+      }));
+    }
+  }
+
+  // ── Trade Handler ──
+
+  private handleTrade(trade: PumpFunTrade): void {
+    const priceSol = trade.marketCapSol / CONFIG.PUMPFUN_TOTAL_SUPPLY;
+    const priceUsd = priceSol * solPriceUsd;
+
+    // Update price for held positions
+    this.onPriceUpdate?.(trade.mint, priceSol, priceUsd, trade.marketCapSol);
+
+    // Update candidate tracking
+    const candidate = this.candidates.get(trade.mint);
+    if (!candidate || candidate.qualified) return;
+
+    // Update price data
+    candidate.latestMarketCapSol = trade.marketCapSol;
+    candidate.latestPriceSol = priceSol;
+    candidate.latestPriceUsd = priceUsd;
+    candidate.lastTradeAt = Date.now();
+
+    if (trade.txType === 'buy') {
+      candidate.buyCount++;
+
+      // Track unique buyers EXCLUDING the developer wallet
+      if (trade.traderPublicKey !== candidate.devWallet) {
+        candidate.uniqueBuyers.add(trade.traderPublicKey);
+      }
+
+      // Estimate buy volume from bonding curve changes
+      // solAmount isn't directly in the event, estimate from market cap change
+      candidate.totalBuyVolumeSol += Math.abs(
+        trade.marketCapSol - candidate.latestMarketCapSol
+      ) || 0.01;
+    } else {
+      candidate.sellCount++;
+    }
+
+    // ── Check qualification ──
+    const ageSec = (Date.now() - candidate.createdAt) / 1000;
+    const uniqueBuyerCount = candidate.uniqueBuyers.size;
+
+    if (
+      !candidate.qualified &&
+      uniqueBuyerCount >= CONFIG.MIN_UNIQUE_BUYERS &&
+      ageSec >= CONFIG.MIN_TOKEN_AGE_SECONDS &&
+      ageSec <= CONFIG.MAX_TOKEN_AGE_SECONDS
+    ) {
+      candidate.qualified = true;
+
+      log.success(
+        MODULE,
+        `QUALIFIED: ${candidate.symbol} | Buyers: ${uniqueBuyerCount} (excl. dev) | Age: ${ageSec.toFixed(0)}s | MCap: ${candidate.latestMarketCapSol.toFixed(2)} SOL ($${(candidate.latestMarketCapSol * solPriceUsd).toFixed(0)})`
+      );
+
+      this.onQualifiedToken?.(candidate);
+    }
+  }
+
+  // ── Cleanup ──
+
+  private cleanupCandidates(): void {
+    const now = Date.now();
+    const expired: string[] = [];
+
+    for (const [mint, candidate] of this.candidates) {
+      if (candidate.qualified) continue;
+
+      const age = now - candidate.createdAt;
+      if (age > CONFIG.CANDIDATE_TIMEOUT_MS) {
+        expired.push(mint);
+      }
+    }
+
+    if (expired.length > 0) {
+      for (const mint of expired) {
+        this.candidates.delete(mint);
+        // Unsubscribe from trades if not in our held positions
+        if (!this.subscribedTokens.has(mint) && this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            method: 'unsubscribeTokenTrade',
+            keys: [mint],
+          }));
+        }
+      }
+      log.info(MODULE, `Cleaned up ${expired.length} expired candidate(s) | Active: ${this.candidates.size}`);
+    }
   }
 }

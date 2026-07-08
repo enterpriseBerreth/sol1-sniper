@@ -1,81 +1,66 @@
-// ── Token & Pair Data ──
+// ── Pump.fun WebSocket Events ──
 
-export interface TokenPair {
-  chainId: string;
-  dexId: string;
-  pairAddress: string;
-  baseToken: {
-    address: string;
-    name: string;
-    symbol: string;
-  };
-  quoteToken: {
-    address: string;
-    name: string;
-    symbol: string;
-  };
-  priceUsd: string;
-  priceNative: string;
-  liquidity?: { usd: number; base: number; quote: number };
-  fdv?: number;
-  marketCap?: number;
-  pairCreatedAt?: number;
-  volume?: { h24: number; h6: number; h1: number; m5: number };
-  priceChange?: { h24: number; h6: number; h1: number; m5: number };
-  txns?: {
-    h24: { buys: number; sells: number };
-    h6: { buys: number; sells: number };
-    h1: { buys: number; sells: number };
-    m5: { buys: number; sells: number };
-  };
-  info?: {
-    imageUrl?: string;
-    websites?: { url: string }[];
-    socials?: { type: string; url: string }[];
-  };
-}
-
-// ── Safety Check Result ──
-
-export interface SafetyResult {
-  score: number;
-  passed: boolean;
-  checks: SafetyCheck[];
-  flags: string[];
-}
-
-export interface SafetyCheck {
+export interface PumpFunNewToken {
+  mint: string;
   name: string;
-  passed: boolean;
-  score: number;
-  maxScore: number;
-  detail: string;
+  symbol: string;
+  uri: string;
+  traderPublicKey: string; // Dev/creator wallet
+  initialBuy: number;
+  bondingCurveKey: string;
+  vTokensInBondingCurve: number;
+  vSolInBondingCurve: number;
+  marketCapSol: number;
 }
 
-// ── Token Evaluation ──
+export interface PumpFunTrade {
+  signature: string;
+  mint: string;
+  traderPublicKey: string;
+  txType: 'buy' | 'sell';
+  tokenAmount: number;
+  newTokenBalance: number;
+  bondingCurveKey: string;
+  vTokensInBondingCurve: number;
+  vSolInBondingCurve: number;
+  marketCapSol: number;
+}
 
-export interface TokenEvaluation {
-  token: TokenPair;
-  safetyResult: SafetyResult;
-  entryScore: number;
-  reasons: string[];
-  timestamp: number;
+// ── Token Candidate (pre-buy tracking) ──
+
+export interface TokenCandidate {
+  mint: string;
+  name: string;
+  symbol: string;
+  devWallet: string;
+  createdAt: number;
+  uniqueBuyers: Set<string>;
+  buyCount: number;
+  sellCount: number;
+  latestMarketCapSol: number;
+  latestPriceSol: number;
+  latestPriceUsd: number;
+  totalBuyVolumeSol: number;
+  lastTradeAt: number;
+  qualified: boolean;
 }
 
 // ── Position / Trade ──
 
-export type PositionStatus = 'open' | 'closed' | 'partial';
+export type PositionStatus = 'open' | 'partial' | 'closed';
 
 export interface Position {
   id: string;
-  tokenAddress: string;
-  tokenSymbol: string;
-  tokenName: string;
-  pairAddress: string;
+  mint: string;
+  symbol: string;
+  name: string;
 
-  entryPrice: number;
-  currentPrice: number;
-  highestPrice: number;
+  entryPriceSol: number;
+  entryPriceUsd: number;
+  currentPriceSol: number;
+  currentPriceUsd: number;
+  highestPriceSol: number;
+  highestPriceUsd: number;
 
   initialSizeUsd: number;
   remainingSizeUsd: number;
@@ -88,16 +73,14 @@ export interface Position {
   pnlUsd: number;
   pnlPct: number;
 
-  safetyScore: number;
+  uniqueBuyersAtEntry: number;
   capitalBeforeBuy: number;
 
   takeProfitLevelsHit: number[];
-  trailingStopPrice: number;
+  trailingStopPriceSol: number;
 
   exitReason?: string;
 }
-
-// ── Trade Action ──
 
 export type TradeAction = 'BUY' | 'SELL' | 'PARTIAL_SELL';
 
@@ -105,7 +88,7 @@ export interface TradeEvent {
   action: TradeAction;
   position: Position;
   amountUsd: number;
-  price: number;
+  priceUsd: number;
   reason: string;
   timestamp: number;
 }
@@ -117,6 +100,6 @@ export interface BotState {
   totalPnl: number;
   tradesExecuted: number;
   positions: Map<string, Position>;
-  seenTokens: Set<string>;
   startTime: number;
+  solPriceUsd: number;
 }

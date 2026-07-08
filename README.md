@@ -1,130 +1,109 @@
-# SOL1 — Solana Sniper Bot
+# PUMPFUNBOT
 
-A Solana token sniper bot that automatically detects and paper-trades newly launched tokens, with aggressive scam protection and trailing exit strategies for maximum profit capture.
+Automated Pump.fun trading bot with paper trading, trailing exits, and Telegram alerts.
 
 ## Features
 
-- **New Token Detection** — Monitors DexScreener for freshly launched Solana tokens (< 30 min old)
-- **8-Layer Safety System** — Mint authority, freeze authority, holder distribution, liquidity depth, honeypot simulation, volume/momentum, social presence, token age
-- **Paper Trading** — Starts with $1,000 USD simulated budget, $30 per trade
-- **Smart Position Management** — Max 3 concurrent trades with full lifecycle tracking
-- **Trailing Stop Loss** — Dynamic stops that tighten as profit increases (15% → 12% → 10% → 8%)
-- **Multi-Level Take Profit** — Auto-sells 25% at 2x, 3x, and 6x with tight trailing stop on final 25%
-- **Telegram Alerts** — Real-time buy/sell notifications with PNL in $ and %
-- **Stale Exit** — Auto-closes positions with < 10% gain after 30 minutes
-- **Time-Based Exit** — Mandatory close after 2 hours max hold
+- **Real-time Pump.fun scanning** via PumpPortal WebSocket
+- **Smart entry criteria**: Requires 3+ unique buyers (excluding developer) and 10s+ token age
+- **Paper trading mode** with $100 starting budget
+- **$10 per trade** with intelligent position sizing
+- **Tiered take-profit**: Sells at +50%, +75%, +100% to lock in gains
+- **Moon bag strategy**: Rides remaining 25% with trailing stops for max profit
+- **Adaptive trailing stops**: Tightens as profit grows (25% -> 18% -> 15% -> 10% -> 8%)
+- **Telegram alerts**: Real-time notifications for every buy, sell, and partial sell with PNL
+- **Railway compatible**: Deploy and run 24/7
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Clone & Install
 
 ```bash
+git clone <repo-url>
+cd pumpfunbot
 npm install
 ```
 
-### 2. Configure environment
+### 2. Configure Environment
+
+Copy the template and fill in your values:
 
 ```bash
-copy env.template .env
+cp env.template .env
 ```
 
-Edit `.env` with your settings:
+Required environment variables:
+- `TELEGRAM_BOT_TOKEN` - Create a bot via [@BotFather](https://t.me/BotFather)
+- `TELEGRAM_CHAT_ID` - Your chat ID (use [@userinfobot](https://t.me/userinfobot))
 
-```env
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_CHAT_ID=your_chat_id_here
-PAPER_TRADE=true
-```
-
-#### Getting Telegram credentials
-
-1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → save the token
-2. Message your new bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates` → find your `chat_id`
-
-#### Recommended RPC
-
-The public Solana RPC has rate limits. For best performance, use a dedicated RPC:
-- [Helius](https://helius.dev) (free tier available)
-- [QuickNode](https://quicknode.com)
-- [Alchemy](https://alchemy.com)
-
-### 3. Run the bot
+### 3. Run
 
 ```bash
+# Paper trading (default, safe)
 npm start
-```
 
-Or in watch mode (auto-restart on changes):
-
-```bash
+# Development mode with auto-reload
 npm run dev
 ```
 
-## Trading Parameters
+## Trading Strategy
 
-| Parameter | Value |
-|-----------|-------|
-| Mode | Paper Trading |
-| Budget | $1,000 USD |
-| Trade Size | $30 per trade |
-| Max Concurrent | 3 trades |
-| Min Safety Score | 80/100 |
-| Min Liquidity | $5,000 |
-| Stop Loss | 20% initial |
-| Max Hold | 2 hours |
+### Entry Criteria
+- Token launched on Pump.fun
+- At least **3 unique buyers** (developer wallet excluded)
+- Token is at least **10 seconds old** (avoids instant rugs)
+- Token is less than 5 minutes old (catches early momentum)
 
-## Safety Checks (Scoring)
+### Exit Strategy
+| Trigger | Action |
+|---------|--------|
+| +50% | Sell 30% of position |
+| +75% | Sell 25% of position |
+| +100% | Sell 20% of position |
+| Remaining 25% | Ride with trailing stop for maximum profit |
 
-| Check | Max Score | Critical? |
-|-------|-----------|-----------|
-| Honeypot Simulation | 20 | Yes — auto-reject |
-| Mint Authority Revoked | 15 | Yes — auto-reject |
-| Holder Distribution | 15 | If DANGER flag |
-| Volume & Momentum | 15 | No |
-| Freeze Authority | 10 | No |
-| Liquidity Depth | 10 | No |
-| Social Presence | 8 | No |
-| Token Age | 7 | No |
+### Trailing Stop Tiers
+| Profit Level | Trail Distance |
+|-------------|---------------|
+| +30% | 25% from peak |
+| +100% | 18% from peak |
+| +250% | 15% from peak |
+| +500% | 10% from peak |
+| +1000% | 8% from peak |
 
-Tokens must score **80/100+** AND pass all critical checks to be traded.
+### Risk Management
+- **Stop loss**: -35% from entry
+- **Stale exit**: Close if <10% gain after 15 minutes
+- **Max hold time**: 60 minutes
 
-## Exit Strategy
+## Environment Variables
 
-```
-Price Movement          Action
-─────────────────────────────────────
-Drop -20%              → Stop loss (sell 100%)
-Rise +100% (2x)        → Take profit (sell 25%)
-Rise +200% (3x)        → Take profit (sell 25%)
-Rise +500% (6x)        → Take profit (sell 25%)
-Final 25%              → Tight 8% trailing stop
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PAPER_TRADE` | No | `true` | Paper trading mode |
+| `TELEGRAM_BOT_TOKEN` | For alerts | - | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | For alerts | - | Telegram chat ID |
 
-Trailing Stop Tiers:
-  Above +30%           → 15% trail from peak
-  Above +75%           → 12% trail from peak
-  Above +150%          → 10% trail from peak
-  Above +300%          → 8% trail from peak
+## Deploy to Railway
 
-Time Exits:
-  30 min + <10% gain   → Stale exit (sell 100%)
-  2 hours              → Forced exit (sell 100%)
-```
+1. Push to GitHub
+2. Connect repo to Railway
+3. Set environment variables in Railway dashboard
+4. Deploy - bot starts automatically
 
-## Project Structure
+## Architecture
 
 ```
 src/
-├── index.ts       Main orchestrator
-├── config.ts      All configuration constants
-├── types.ts       TypeScript interfaces
-├── scanner.ts     New token discovery (DexScreener + Jupiter)
-├── safety.ts      8-layer scam protection
-├── trader.ts      Paper trading engine + exits
-├── telegram.ts    Telegram alert system
-└── logger.ts      Colored console logging
+  index.ts      Main entry & orchestration
+  config.ts     All configuration parameters
+  types.ts      TypeScript interfaces
+  scanner.ts    Pump.fun WebSocket + price feeds
+  trader.ts     Paper trading engine
+  telegram.ts   Telegram alert system
+  logger.ts     Colored console output
 ```
 
 ## Disclaimer
 
-This bot is for **educational and paper trading purposes only**. Cryptocurrency trading involves substantial risk of loss. New token sniping is extremely high risk. Never trade with money you cannot afford to lose. The authors are not responsible for any financial losses.
+This bot is for educational and paper trading purposes only. Cryptocurrency trading involves substantial risk. Never trade with money you cannot afford to lose.
